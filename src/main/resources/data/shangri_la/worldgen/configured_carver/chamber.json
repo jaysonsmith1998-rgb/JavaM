@@ -1,0 +1,25 @@
+{
+  "type": "shangri_la:chamber",
+  "config": {
+    "probability": 1.0,
+    "y": {
+      "type": "minecraft:uniform",
+      "max_inclusive": {
+        "absolute": 30
+      },
+      "min_inclusive": {
+        "absolute": -30
+      }
+    },
+    "yScale": {
+      "type": "minecraft:uniform",
+      "max_exclusive": 0.9,
+      "min_inclusive": 0.1
+    },
+    "lava_level": {
+      "above_bottom": 8
+    },
+    "replaceable": "#minecraft:overworld_carver_replaceables",
+    "debug_settings": {}
+  }
+}

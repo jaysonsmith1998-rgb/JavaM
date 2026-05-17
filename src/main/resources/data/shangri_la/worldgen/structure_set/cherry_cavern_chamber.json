@@ -1,0 +1,14 @@
+{
+  "structures": [
+    {
+      "structure": "shangri_la:cherry_cavern_chamber",
+      "weight": 1
+    }
+  ],
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 80,
+    "separation": 30,
+    "salt": 19283744
+  }
+}

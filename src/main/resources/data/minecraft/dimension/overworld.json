@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:overworld",
+  "generator": {
+    "type": "minecraft:noise",
+    "biome_source": {
+      "type": "shangri_la:shangri_la",
+      "cave_biome": "shangri_la:cherry_cavern",
+      "wrapped": {
+        "type": "minecraft:multi_noise",
+        "preset": "minecraft:overworld"
+      }
+    },
+    "settings": "minecraft:overworld"
+  }
+}
