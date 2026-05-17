@@ -1,7 +1,0 @@
-{
-  "pack": {
-    "description": "Shangri-La Caves internal resources",
-    "min_format": [101, 1],
-    "max_format": [101, 1]
-  }
-}
