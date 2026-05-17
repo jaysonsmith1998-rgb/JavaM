@@ -8,9 +8,9 @@
   "start_pool": "shangri_la:cherry_cavern/village_start",
   "size": 10,
   "start_height": {
-    "absolute": -29
+    "absolute": -21
   },
-  "max_distance_from_center": 116,
+  "max_distance_from_center": 80,
   "use_expansion_hack": false
 }
 

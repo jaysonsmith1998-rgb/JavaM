@@ -64,12 +64,23 @@ public class ShangriLaBiomeSource extends BiomeSource {
     @Override
     public Holder<Biome> getNoiseBiome(int x, int y, int z, Climate.Sampler sampler) {
         // Biome sampling happens at 4-block resolution (quart coords): x, y, z are
-        // *quart* positions when called by the chunk generator. Convert to block
-        // coords by left-shifting by 2 for the region containment check.
+        // *quart* positions. Convert to block coords by left-shifting by 2.
         int blockX = x << 2;
         int blockY = y << 2;
         int blockZ = z << 2;
-        if (ShangriLaRegion.contains(blockX, blockY, blockZ, ShangriLaRegion.DEFAULT_SALT)) {
+        // Inside a region's horizontal footprint, AT OR BELOW the chamber ceiling,
+        // return cherry_cavern. Above the ceiling — including the natural stone
+        // overburden up to the overworld surface — fall through to the wrapped
+        // vanilla biome source so surface terrain generates normally.
+        //
+        // Note: the Y check must use blockY <= CHAMBER_CEILING_Y rather than a
+        // tighter "is this Y inside the air space" check, because quart-coord
+        // sampling rounds Y down by up to 3 blocks. If structure placement asks
+        // for biome at block Y = -29, that maps to quart Y = -8 (→ blockY = -32),
+        // which could fail a tight check. Widening to "anywhere in the column up
+        // to the ceiling" makes the placement biome check reliable.
+        if (blockY <= ShangriLaRegion.CHAMBER_CEILING_Y
+                && ShangriLaRegion.horizontalContains(blockX, blockZ, ShangriLaRegion.DEFAULT_SALT)) {
             return caveBiome;
         }
         return wrapped.getNoiseBiome(x, y, z, sampler);
