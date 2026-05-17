@@ -90,6 +90,15 @@ public final class ChamberPipeline {
         List<RegionContext> regions = regionOverlapCheck(cp, salt);
         if (regions.isEmpty()) return;
 
+        // DIAGNOSTIC MODE: the heavy pipeline work is currently disabled while
+        // we isolate why chunk gen freezes near regions. Log the detection and
+        // bail. If chunks now load smoothly near a region, the freeze is in
+        // the pipeline body (carve/insulate). If chunks still freeze, the
+        // freeze cause is somewhere outside this listener.
+        ShangriLaMod.LOG.info("Region chunk detected at {} {} ({} regions) — pipeline DISABLED for diagnostics",
+                cp.x(), cp.z(), regions.size());
+        if (true) return;
+
         // Resolve the cave biome holder once. Biomes are loaded from the
         // server's biome registry; the cherry_cavern definition is in our mod
         // resources.
@@ -103,6 +112,7 @@ public final class ChamberPipeline {
         }
 
         for (RegionContext region : regions) {
+            long t0 = System.nanoTime();
             carve(level, chunk, region);
             insulate(level, chunk, region);
             surfaceTerrain(level, chunk, region);
@@ -111,6 +121,11 @@ public final class ChamberPipeline {
             decorations(level, chunk, region);
             setBiome(level, chunk, region, caveBiome);
             placeVillage(level, chunk, region);
+            long elapsed = (System.nanoTime() - t0) / 1_000_000;
+            if (elapsed > 50) {
+                ShangriLaMod.LOG.warn("Region chunk {} {} took {} ms",
+                        cp.x(), cp.z(), elapsed);
+            }
         }
     }
 
