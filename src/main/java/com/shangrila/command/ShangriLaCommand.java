@@ -89,9 +89,11 @@ public final class ShangriLaCommand {
         }
 
         int dist = (int) Math.round(Math.sqrt((double) bestD2));
+        final int finalRcx = bestRcx;
+        final int finalRcz = bestRcz;
         src.sendSuccess(() -> Component.literal(String.format(
                 "Nearest Shangri-La region: %d, %d (≈ %d blocks away)",
-                bestRcx, bestRcz, dist)), false);
+                finalRcx, finalRcz, dist)), false);
         return 1;
     }
 
