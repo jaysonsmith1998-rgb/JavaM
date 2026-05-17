@@ -1,38 +1,35 @@
 package com.shangrila.world;
 
 /**
- * Pure-Java geometry for Shangri-La region selection, chamber bounds, and
- * floor/ceiling shape.
+ * Pure-Java geometry and noise for Shangri-La regions.
  *
- * <h2>Region grid</h2>
+ * <h2>Region selection</h2>
  * The world is divided into a square grid of {@link #GRID_SIZE}-block cells.
- * Each cell is independently asked: "do you host a Shangri-La region?" The
- * answer is a deterministic hash of the cell coordinates and a salt. If yes,
- * the region's center is placed at a fixed jittered offset within the cell.
+ * Each cell deterministically chooses whether to host a region, and where the
+ * region's center sits within the cell. Two regions are guaranteed not to touch
+ * because center jitter is bounded to keep regions inside their cells.
  *
- * <h2>Chamber profile</h2>
- * Each chamber is a vertical cylinder of horizontal radius
- * {@link #REGION_RADIUS_BLOCKS}, with these vertical structures:
+ * <h2>Cavern definition</h2>
+ * A block at (x, y, z) is "cavern air" iff:
+ * <ol>
+ *   <li>It is inside a region's vertical cylinder (horizontal radius
+ *       {@link #REGION_RADIUS_BLOCKS}, Y in
+ *       [{@link #CHAMBER_Y_BOTTOM}, {@link #CHAMBER_Y_TOP}]).</li>
+ *   <li>The 3D density function {@link #density} returns a value above
+ *       {@link #CARVE_THRESHOLD}.</li>
+ * </ol>
  *
- * <ul>
- *   <li>Floor: bowl-shaped, deepest at the region center, rising toward the rim
- *       so that at the very edge the floor meets the ceiling and seals the
- *       chamber. Modulated by value noise to produce hills, dips, and an
- *       overall organic feel rather than a perfect mathematical bowl.</li>
- *   <li>Air space above the floor up to the ceiling.</li>
- *   <li>Ceiling: flat at {@link #CHAMBER_CEILING_Y}.</li>
- *   <li>Stone roof above the ceiling left untouched (vanilla terrain
- *       overburden), so any aquifers above the chamber are sealed off.</li>
- * </ul>
+ * <p>Density is the sum of multi-octave value noise and a radial bias that
+ * peaks at the region center and falls off toward the rim and Y extremes.
+ * The bias guarantees a connected, mostly-open volume around the center; the
+ * noise gives the volume an organic boundary — overhangs, alcoves, varied
+ * ceiling height, occasional pillars.
  *
- * <h2>Water</h2>
- * Wherever the floor dips below {@link #WATER_LEVEL}, the gap is filled with
- * water, producing ponds/lakes at the deepest spots near the chamber center.
- *
- * <p>All methods on this class are pure — no Minecraft API dependencies. The
- * carver and biome source call into this class via primitive coordinates.
+ * <p>All methods are pure — no Minecraft API dependencies.
  */
 public final class ShangriLaRegion {
+
+    // ----- Region grid -----
 
     /** Size of the deterministic region grid, in blocks. */
     public static final int GRID_SIZE = 5_000;
@@ -40,62 +37,58 @@ public final class ShangriLaRegion {
     /** Probability that any given grid cell hosts a region. */
     public static final double REGION_PROBABILITY = 0.5;
 
-    /** Horizontal radius of the chamber, in blocks. */
+    /** Horizontal radius of the region cylinder. */
     public static final int REGION_RADIUS_BLOCKS = 192;
 
-    /** Y of the chamber ceiling (flat stone roof). */
-    public static final int CHAMBER_CEILING_Y = 30;
+    /** Lowest possible Y of the chamber interior. Extended below the valley to leave headroom for water features without intruding into the valley space. */
+    public static final int CHAMBER_Y_BOTTOM = -52;
 
-    /** Lowest possible Y of the chamber floor (anywhere). */
-    public static final int CHAMBER_FLOOR_MIN_Y = -30;
+    /** Highest possible Y of the chamber interior. */
+    public static final int CHAMBER_Y_TOP = 40;
 
-    /** Y of the flat central plaza floor. Above {@link #WATER_LEVEL} so plaza doesn't flood. */
-    public static final int PLAZA_FLOOR_Y = -22;
+    /** Y where the valley itself bottoms out (max-bias point). Below this is water headroom. */
+    public static final int VALLEY_FLOOR_Y = -40;
 
-    /** Water surface Y. Floor depressions below this Y fill with water. */
-    public static final int WATER_LEVEL = -25;
+    /** Vertical center of the valley's bias — biased so the valley shape sits where the old version was. */
+    public static final int CHAMBER_Y_CENTER = 0;
 
-    /**
-     * Radius of the central flat plaza, in blocks. Inside this radius, the floor
-     * is a perfectly flat pad at {@link #CHAMBER_FLOOR_MIN_Y} — no bowl gradient
-     * and no noise. This guarantees the village structure always has level ground
-     * to build on at the region center.
-     *
-     * <p>Plaza area is π × 80² ≈ 20,000 blocks², roughly 1/6 the total chamber
-     * area, comfortably accommodating a large jigsaw village.
-     */
-    public static final int PLAZA_RADIUS = 80;
+    /** Distance from {@link #CHAMBER_Y_CENTER} to the top edge of the bias (valley top). */
+    public static final int Y_HALF_UP = CHAMBER_Y_TOP - CHAMBER_Y_CENTER; // 40
 
-    /** Transition width between plaza and bowl, in blocks. Smooths the floor profile. */
-    public static final int PLAZA_TRANSITION = 32;
+    /** Distance from {@link #CHAMBER_Y_CENTER} down to the bottom edge of the bias. */
+    public static final int Y_HALF_DOWN = CHAMBER_Y_CENTER - CHAMBER_Y_BOTTOM; // 52
 
     /**
-     * Distance the chamber center may be jittered from the grid cell center.
-     * Keeps the chamber comfortably inside the cell so adjacent regions never
-     * touch each other (cell spacing minus 2 * radius = guaranteed gap).
+     * Jitter for region center placement within a cell. Bounded so that any
+     * region center is at least {@code REGION_RADIUS + 256} from any cell edge,
+     * guaranteeing regions in adjacent cells never touch.
      */
     private static final int CENTER_JITTER =
             (GRID_SIZE / 2) - REGION_RADIUS_BLOCKS - 256;
 
-    /** Fixed salt for biome-source-side region placement (same regions in every world). */
+    /** Fixed salt so regions appear at the same coordinates in every world. */
     public static final long DEFAULT_SALT = 0x51A_C_CAFE_FEEDL;
 
-    /** Cell size for the value-noise grid (in blocks). Larger = smoother hills. */
-    private static final int NOISE_CELL_SIZE = 32;
+    // ----- Carving noise -----
 
-    /** Amplitude of the noise modulation on the floor, in blocks. */
-    private static final double NOISE_AMPLITUDE = 4.0;
-
-    /** Number of octaves for the value-noise; each octave is 1/2 cell size and 1/2 amp. */
+    /** Cell size for the lowest-frequency noise octave, in blocks. */
+    private static final int NOISE_CELL_SIZE_XZ = 48;
+    private static final int NOISE_CELL_SIZE_Y = 24;
     private static final int NOISE_OCTAVES = 3;
+
+    /** Amplitude scale for noise contribution to density. */
+    private static final double NOISE_AMPLITUDE = 0.55;
+
+    /**
+     * Density threshold for a block to be considered cavern air. Higher = less
+     * open volume; lower = more open. 0.0 gives a moderately open cavern.
+     */
+    public static final double CARVE_THRESHOLD = 0.0;
 
     private ShangriLaRegion() {}
 
-    // -----------------------------------------------------------------------
-    // Region selection
-    // -----------------------------------------------------------------------
+    // ----- Hashing & math primitives -----
 
-    /** Hash that mixes three longs into one. Splitmix-style, deterministic. */
     private static long hash(long a, long b, long c) {
         long h = a * 6364136223846793005L + 1442695040888963407L;
         h ^= b;
@@ -106,40 +99,56 @@ public final class ShangriLaRegion {
         return h;
     }
 
-    /** Floor division of a / b, working correctly for negative a. */
+    private static long hash4(long a, long b, long c, long d) {
+        return hash(hash(a, b, c), d, 0x12345678L);
+    }
+
     private static int floorDiv(int a, int b) {
         int q = a / b;
         if ((a ^ b) < 0 && q * b != a) q--;
         return q;
     }
 
-    /** Decide whether the grid cell at (gx, gz) hosts a region. */
+    private static double smooth(double t) { return t * t * (3.0 - 2.0 * t); }
+    private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+
+    // ----- Region selection -----
+
     public static boolean cellHostsRegion(int gx, int gz, long seed) {
         long h = hash(seed, gx, gz);
         double u = (h >>> 11) * (1.0 / (1L << 53));
         return u < REGION_PROBABILITY;
     }
 
-    /** X center of the region in cell (gx, gz). Only meaningful when cellHostsRegion is true. */
     public static int regionCenterX(int gx, int gz, long seed) {
         long h = hash(seed ^ 0xA5A5A5A5L, gx, gz);
         int jitter = (int) ((h & 0xFFFFFFFFL) % (CENTER_JITTER * 2 + 1)) - CENTER_JITTER;
         return gx * GRID_SIZE + GRID_SIZE / 2 + jitter;
     }
 
-    /** Z center counterpart. */
     public static int regionCenterZ(int gx, int gz, long seed) {
         long h = hash(seed ^ 0x5A5A5A5AL, gx, gz);
         int jitter = (int) ((h & 0xFFFFFFFFL) % (CENTER_JITTER * 2 + 1)) - CENTER_JITTER;
         return gz * GRID_SIZE + GRID_SIZE / 2 + jitter;
     }
 
-    /** Returns the cell coords (packed: hi=gx, lo=gz) of the nearest region center, or null sentinel. */
-    private static long nearestRegionCell(int x, int z, long seed) {
+    /** Packs (gx, gz) into a long. */
+    private static long packCell(int gx, int gz) {
+        return (((long) gx) << 32) | (gz & 0xFFFFFFFFL);
+    }
+    private static int unpackGx(long c) { return (int) (c >> 32); }
+    private static int unpackGz(long c) { return (int) c; }
+
+    /**
+     * Returns the cell coords of the nearest region center to (x, z) in the
+     * 3x3 neighborhood of cells, or {@link Long#MIN_VALUE} if none. The packed
+     * encoding is hi=gx, lo=gz.
+     */
+    public static long nearestRegionCell(int x, int z, long seed) {
         int gx = floorDiv(x, GRID_SIZE);
         int gz = floorDiv(z, GRID_SIZE);
+        long bestCell = Long.MIN_VALUE;
         long bestD2 = -1;
-        long bestCell = 0;
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 int cx = gx + dx;
@@ -152,169 +161,132 @@ public final class ShangriLaRegion {
                 long d2 = ddx * ddx + ddz * ddz;
                 if (bestD2 < 0 || d2 < bestD2) {
                     bestD2 = d2;
-                    bestCell = (((long) cx) << 32) | (cz & 0xFFFFFFFFL);
+                    bestCell = packCell(cx, cz);
                 }
             }
         }
-        return bestD2 < 0 ? Long.MIN_VALUE : bestCell;
+        return bestCell;
     }
 
-    /** Squared distance from (x, z) to the nearest region center, or -1 if no region within reach. */
     public static long nearestRegionDistanceSq(int x, int z, long seed) {
-        int gx = floorDiv(x, GRID_SIZE);
-        int gz = floorDiv(z, GRID_SIZE);
-        long best = -1;
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                int cx = gx + dx;
-                int cz = gz + dz;
-                if (!cellHostsRegion(cx, cz, seed)) continue;
-                int rcx = regionCenterX(cx, cz, seed);
-                int rcz = regionCenterZ(cx, cz, seed);
-                long ddx = x - rcx;
-                long ddz = z - rcz;
-                long d2 = ddx * ddx + ddz * ddz;
-                if (best < 0 || d2 < best) best = d2;
-            }
-        }
-        return best;
+        long cell = nearestRegionCell(x, z, seed);
+        if (cell == Long.MIN_VALUE) return -1;
+        int gx = unpackGx(cell);
+        int gz = unpackGz(cell);
+        long ddx = x - regionCenterX(gx, gz, seed);
+        long ddz = z - regionCenterZ(gx, gz, seed);
+        return ddx * ddx + ddz * ddz;
     }
 
-    /** True if (x, z) is inside the horizontal footprint of any region. */
+    /** True if (x, z) is within the horizontal cylinder of any region. */
     public static boolean horizontalContains(int x, int z, long seed) {
         long d2 = nearestRegionDistanceSq(x, z, seed);
-        if (d2 < 0) return false;
-        return d2 <= (long) REGION_RADIUS_BLOCKS * REGION_RADIUS_BLOCKS;
+        return d2 >= 0 && d2 <= (long) REGION_RADIUS_BLOCKS * REGION_RADIUS_BLOCKS;
     }
 
-    /** True if (x, y, z) is inside the air space of any chamber. */
-    public static boolean contains(int x, int y, int z, long seed) {
-        if (y > CHAMBER_CEILING_Y) return false;
-        if (!horizontalContains(x, z, seed)) return false;
-        int floor = floorHeight(x, z, seed);
-        return y >= floor && y <= CHAMBER_CEILING_Y;
-    }
+    // ----- 3D value noise -----
 
-    // -----------------------------------------------------------------------
-    // Value noise
-    // -----------------------------------------------------------------------
-
-    /** Smoothstep function for value noise interpolation. */
-    private static double smooth(double t) {
-        return t * t * (3.0 - 2.0 * t);
-    }
-
-    /** Linear interpolation. */
-    private static double lerp(double a, double b, double t) {
-        return a + (b - a) * t;
-    }
-
-    /** Per-grid-corner random value in [-1, 1], deterministic from coords + seed. */
-    private static double cornerValue(int gx, int gz, long seed) {
-        long h = hash(seed, gx, gz);
-        // Convert top 53 bits to double in [0,1), then to [-1, 1].
+    private static double cornerValue3(int gx, int gy, int gz, long seed) {
+        long h = hash4(seed, gx, gy, gz);
         double u = (h >>> 11) * (1.0 / (1L << 53));
         return u * 2.0 - 1.0;
     }
 
-    /** 2D value noise sampled at (x, z) with the given cell size. Result in [-1, 1]. */
-    private static double valueNoise(int x, int z, int cellSize, long seed) {
-        int gx = floorDiv(x, cellSize);
-        int gz = floorDiv(z, cellSize);
-        double fx = (double) (x - gx * cellSize) / cellSize;
-        double fz = (double) (z - gz * cellSize) / cellSize;
-        double v00 = cornerValue(gx,     gz,     seed);
-        double v10 = cornerValue(gx + 1, gz,     seed);
-        double v01 = cornerValue(gx,     gz + 1, seed);
-        double v11 = cornerValue(gx + 1, gz + 1, seed);
-        double sx = smooth(fx);
-        double sz = smooth(fz);
-        return lerp(lerp(v00, v10, sx), lerp(v01, v11, sx), sz);
+    /** 3D value noise with separate XZ and Y cell sizes. Result in [-1, 1]. */
+    private static double valueNoise3(int x, int y, int z, int cellXZ, int cellY, long seed) {
+        int gx = floorDiv(x, cellXZ);
+        int gy = floorDiv(y, cellY);
+        int gz = floorDiv(z, cellXZ);
+        double fx = (double) (x - gx * cellXZ) / cellXZ;
+        double fy = (double) (y - gy * cellY) / cellY;
+        double fz = (double) (z - gz * cellXZ) / cellXZ;
+        double sx = smooth(fx), sy = smooth(fy), sz = smooth(fz);
+        double c000 = cornerValue3(gx,     gy,     gz,     seed);
+        double c100 = cornerValue3(gx + 1, gy,     gz,     seed);
+        double c010 = cornerValue3(gx,     gy + 1, gz,     seed);
+        double c110 = cornerValue3(gx + 1, gy + 1, gz,     seed);
+        double c001 = cornerValue3(gx,     gy,     gz + 1, seed);
+        double c101 = cornerValue3(gx + 1, gy,     gz + 1, seed);
+        double c011 = cornerValue3(gx,     gy + 1, gz + 1, seed);
+        double c111 = cornerValue3(gx + 1, gy + 1, gz + 1, seed);
+        double x00 = lerp(c000, c100, sx);
+        double x10 = lerp(c010, c110, sx);
+        double x01 = lerp(c001, c101, sx);
+        double x11 = lerp(c011, c111, sx);
+        double y0 = lerp(x00, x10, sy);
+        double y1 = lerp(x01, x11, sy);
+        return lerp(y0, y1, sz);
     }
 
-    /** Fractional Brownian motion of value noise. */
-    private static double fbm(int x, int z, long seed) {
-        double total = 0.0;
-        double amp = 1.0;
-        double maxAmp = 0.0;
-        int cell = NOISE_CELL_SIZE;
+    /** 3D fractional Brownian motion. */
+    private static double fbm3(int x, int y, int z, long seed) {
+        double total = 0, amp = 1, maxAmp = 0;
+        int cellXZ = NOISE_CELL_SIZE_XZ;
+        int cellY = NOISE_CELL_SIZE_Y;
         long s = seed;
         for (int o = 0; o < NOISE_OCTAVES; o++) {
-            total += amp * valueNoise(x, z, cell, s);
+            total += amp * valueNoise3(x, y, z, cellXZ, cellY, s);
             maxAmp += amp;
             amp *= 0.5;
-            cell = Math.max(2, cell / 2);
+            cellXZ = Math.max(4, cellXZ / 2);
+            cellY = Math.max(2, cellY / 2);
             s = hash(s, 0x6789ABCDL, o);
         }
         return total / maxAmp;
     }
 
-    // -----------------------------------------------------------------------
-    // Chamber profile
-    // -----------------------------------------------------------------------
+    // ----- Density / carving query -----
 
     /**
-     * Y of the chamber floor at (x, z). Returns {@link Integer#MAX_VALUE} if
-     * outside any region footprint (i.e. no carving should occur here).
+     * Density at (x, y, z). Positive values are "open" (cavern air), negative
+     * values are "solid". The carve threshold compares against
+     * {@link #CARVE_THRESHOLD}.
      *
-     * <p>Profile zones (by radial distance r from region center):
-     * <ul>
-     *   <li>{@code r < PLAZA_RADIUS}: flat plaza at
-     *       {@link #PLAZA_FLOOR_Y}, no bowl, no noise. Guarantees the
-     *       village always has a large level pad to build on.</li>
-     *   <li>{@code PLAZA_RADIUS ≤ r ≤ PLAZA_RADIUS + PLAZA_TRANSITION}: smooth
-     *       blend from plaza Y to bowl Y, with noise tapering in.</li>
-     *   <li>{@code r > PLAZA_RADIUS + PLAZA_TRANSITION}: full bowl-plus-noise
-     *       terrain — gentle hills, dips, ponds, rising to the ceiling at rim.</li>
-     * </ul>
+     * <p>Returns a very negative value if (x, z) is outside any region — never
+     * "open" outside a region.
      */
-    public static int floorHeight(int x, int z, long seed) {
-        long d2 = nearestRegionDistanceSq(x, z, seed);
-        if (d2 < 0) return Integer.MAX_VALUE;
-        double r = Math.sqrt(d2);
-        if (r > REGION_RADIUS_BLOCKS) return Integer.MAX_VALUE;
+    public static double density(int x, int y, int z, long seed) {
+        long cell = nearestRegionCell(x, z, seed);
+        if (cell == Long.MIN_VALUE) return -10.0;
+        int gx = unpackGx(cell);
+        int gz = unpackGz(cell);
+        int rcx = regionCenterX(gx, gz, seed);
+        int rcz = regionCenterZ(gx, gz, seed);
+        long ddx = x - rcx;
+        long ddz = z - rcz;
+        double r = Math.sqrt((double) (ddx * ddx + ddz * ddz));
+        if (r > REGION_RADIUS_BLOCKS) return -10.0;
+        if (y < CHAMBER_Y_BOTTOM || y > CHAMBER_Y_TOP) return -10.0;
 
-        // Plaza zone: flat at plaza Y (above water level so it doesn't flood).
-        if (r <= PLAZA_RADIUS) return PLAZA_FLOOR_Y;
+        // Radial bias: 1 at center (full open), 0 at rim. Quartic falloff
+        // keeps a wide flat-ish interior with rapid solidification near the rim.
+        double rN = r / REGION_RADIUS_BLOCKS;                  // 0..1
+        double radialOpen = 1.0 - rN * rN;                     // 1 → 0
 
-        // Bowl profile beyond the plaza: r' is normalized into [0, 1] where 0 is
-        // the plaza edge and 1 is the chamber rim. Quadratic ease-in gives a
-        // gentle slope up from the plaza, steepening near the rim. Outside the
-        // plaza the floor can dip below the plaza level (especially with noise)
-        // forming ponds at WATER_LEVEL in the rings around the plaza.
-        double bowlR = (r - PLAZA_RADIUS) / (REGION_RADIUS_BLOCKS - PLAZA_RADIUS);
-        double bowl = bowlR * bowlR;
-        // Bowl base interpolates from a slight dip just outside the plaza, up to
-        // the ceiling at the rim. The "dip" at bowlR=0 is set to a few blocks
-        // below the plaza floor so we get a moat / ring of low ground around the
-        // plaza — perfect for water features.
-        int bowlBaseMin = PLAZA_FLOOR_Y - 6;  // 6 blocks below plaza = 4 below water
-        double base = bowlBaseMin + (CHAMBER_CEILING_Y - bowlBaseMin) * bowl;
+        // Vertical bias: 1 at Y_CENTER, 0 at Y_TOP / Y_BOTTOM. Asymmetric so the
+        // bottom extends further below Y_CENTER (water headroom) without
+        // changing where the valley sits. yN normalized into [-1, 1].
+        double yDelta = y - CHAMBER_Y_CENTER;
+        double yN = yDelta >= 0
+                ? yDelta / Y_HALF_UP
+                : yDelta / Y_HALF_DOWN;
+        double verticalOpen = 1.0 - yN * yN;                   // 1 → 0
 
-        // Noise applies in the transition zone and beyond, but is suppressed
-        // near the rim so it cannot blow through the seal.
-        double noiseMask;
-        if (r <= PLAZA_RADIUS + PLAZA_TRANSITION) {
-            // Ease noise in across the transition zone.
-            noiseMask = (r - PLAZA_RADIUS) / PLAZA_TRANSITION;
-        } else {
-            // Beyond transition: full noise, tapered down toward the rim.
-            noiseMask = 1.0 - bowl;
-        }
-        double noise = fbm(x, z, seed ^ 0xF0C9F0C9L) * NOISE_AMPLITUDE * noiseMask;
+        // Combined bias scales to ~1 inside the chamber, 0 at boundaries.
+        double bias = radialOpen * verticalOpen;
 
-        int y = (int) Math.round(base + noise);
-        if (y > CHAMBER_CEILING_Y - 1) y = CHAMBER_CEILING_Y - 1;
-        if (y < CHAMBER_FLOOR_MIN_Y) y = CHAMBER_FLOOR_MIN_Y;
-        return y;
+        // Noise modulates the boundary contour. NOISE_AMPLITUDE controls how
+        // much the noise can push the boundary in/out from the ideal ellipsoid.
+        double noise = fbm3(x, y, z, seed ^ 0xCA7E_F0F0L);
+
+        // Final density: bias minus threshold offset, plus noise contribution.
+        // When bias is high (deep inside), even very negative noise stays open.
+        // When bias is near 0 (near the boundary), noise determines local shape.
+        return bias - 0.5 + NOISE_AMPLITUDE * noise;
     }
 
-    /** Y of the chamber ceiling — flat stone roof shared across the whole region. */
-    public static int ceilingHeight(int x, int z, long seed) {
-        long d2 = nearestRegionDistanceSq(x, z, seed);
-        if (d2 < 0) return Integer.MIN_VALUE;
-        double r = Math.sqrt(d2);
-        if (r > REGION_RADIUS_BLOCKS) return Integer.MIN_VALUE;
-        return CHAMBER_CEILING_Y;
+    /** Convenience: is this block carved out as cavern air? */
+    public static boolean isOpen(int x, int y, int z, long seed) {
+        return density(x, y, z, seed) > CARVE_THRESHOLD;
     }
 }

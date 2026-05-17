@@ -21,6 +21,6 @@ public class ShangriLaMod implements ModInitializer {
     @Override
     public void onInitialize() {
         ModRegistries.bootstrap();
-        LOG.info("Shangri-La initialized: biome source + chamber carver registered.");
+        LOG.info("Shangri-La initialized: post-worldgen chamber pipeline active.");
     }
 }
