@@ -168,29 +168,34 @@ public final class ShangriLaRegion {
      * chamber. Returns {@link Integer#MIN_VALUE} if outside the chamber footprint.
      *
      * <p>The ceiling tapers down toward the chamber edge so the chamber has a
-     * dome-like profile instead of a sharp vertical cutoff.
+     * dome-like profile instead of a sharp vertical cutoff. The floor is flat —
+     * only the ceiling domes — so the chamber interior reads as one big valley
+     * with a vaulted roof, not as concentric stepped bowls.
      */
     public static int chamberCeilingShape(int x, int z, long seed) {
         long d2 = nearestRegionDistanceSq(x, z, seed);
         if (d2 < 0) return Integer.MIN_VALUE;
         double r = Math.sqrt(d2);
         if (r > REGION_RADIUS_BLOCKS) return Integer.MIN_VALUE;
-        // Smooth taper: full height at center, 0 at edge.
+        // Smooth taper: full ceiling height at center, taper to floor near edge.
         double t = r / REGION_RADIUS_BLOCKS;          // 0..1
         double profile = Math.sqrt(Math.max(0.0, 1.0 - t * t));   // half-ellipse
-        int half = (int) Math.round(CHAMBER_Y_HALF_HEIGHT * profile);
-        return CHAMBER_Y_CENTER + half;
+        // Full vertical span (floor → top) at center; 0 at rim.
+        int span = (int) Math.round(2 * CHAMBER_Y_HALF_HEIGHT * profile);
+        return CHAMBER_Y_MIN + span;
     }
 
-    /** Chamber floor Y at (x, z) — mirror of {@link #chamberCeilingShape}. */
+    /**
+     * Chamber floor Y at (x, z): the chamber floor is FLAT at {@link #CHAMBER_Y_MIN}
+     * across the entire footprint. This avoids the concentric stepped-bowl artifact
+     * that arises when the floor follows the same dome profile as the ceiling, and
+     * gives the village structure a predictable, level surface to build on.
+     */
     public static int chamberFloorShape(int x, int z, long seed) {
         long d2 = nearestRegionDistanceSq(x, z, seed);
         if (d2 < 0) return Integer.MAX_VALUE;
         double r = Math.sqrt(d2);
         if (r > REGION_RADIUS_BLOCKS) return Integer.MAX_VALUE;
-        double t = r / REGION_RADIUS_BLOCKS;
-        double profile = Math.sqrt(Math.max(0.0, 1.0 - t * t));
-        int half = (int) Math.round(CHAMBER_Y_HALF_HEIGHT * profile);
-        return CHAMBER_Y_CENTER - half;
+        return CHAMBER_Y_MIN;
     }
 }
