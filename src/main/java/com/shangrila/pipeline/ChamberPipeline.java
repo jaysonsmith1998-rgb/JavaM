@@ -215,9 +215,12 @@ public final class ChamberPipeline {
      * Anything else (vanilla cave air, dirt, water from outside the cylinder)
      * gets overwritten with stone — guaranteeing the 1-block stone shell.
      *
-     * <p>Neighbors at the chunk edge may reach into adjacent chunks; we use
-     * {@link ServerLevel#setBlock} for those so they get written to whichever
-     * chunk they belong to.
+     * <p><b>Strictly in-chunk.</b> Cross-chunk writes during {@code CHUNK_GENERATE}
+     * deadlock the chunk-gen executor (we'd be asking it to load a neighbor that
+     * may itself be waiting on us). Neighbors outside this chunk are skipped here;
+     * when each adjacent chunk runs its own pipeline pass later, it will insulate
+     * itself the same way. The two halves meet at the chunk boundary because the
+     * density function is pure and produces consistent results from either side.
      */
     private static void insulate(ServerLevel level, LevelChunk chunk, RegionContext region) {
         BlockPos.MutableBlockPos cur = new BlockPos.MutableBlockPos();
@@ -244,26 +247,26 @@ public final class ChamberPipeline {
 
                     for (int axis = 0; axis < 6; axis++) {
                         int nx = x + DX[axis];
-                        int ny = y + DY[axis];
                         int nz = z + DZ[axis];
+                        // Skip neighbors that fall outside this chunk: they
+                        // belong to a different chunk and writing them here
+                        // would touch chunks that may still be generating,
+                        // deadlocking the chunk-gen pipeline. When their own
+                        // chunk runs, its insulate pass will handle them.
+                        if (!inChunk(nx, nz, minX, minZ, maxX, maxZ)) continue;
+
+                        int ny = y + DY[axis];
                         nb.set(nx, ny, nz);
 
                         // If the neighbor is itself part of the cavern (an
                         // "open" point per our density), leave it alone.
                         if (ShangriLaRegion.isOpen(nx, ny, nz, region.salt())) continue;
 
-                        BlockState nbState =
-                                inChunk(nx, nz, minX, minZ, maxX, maxZ)
-                                        ? chunk.getBlockState(nb)
-                                        : level.getBlockState(nb);
+                        BlockState nbState = chunk.getBlockState(nb);
                         if (nbState.is(Blocks.BEDROCK)) continue;
                         if (nbState.is(Blocks.STONE)) continue;
 
-                        if (inChunk(nx, nz, minX, minZ, maxX, maxZ)) {
-                            chunk.setBlockState(nb, STONE, WRITE_FLAGS);
-                        } else {
-                            level.setBlock(nb, STONE, 2 /* updateNeighbors=false */);
-                        }
+                        chunk.setBlockState(nb, STONE, WRITE_FLAGS);
                     }
                 }
             }
