@@ -2,6 +2,7 @@ package com.shangrila.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.shangrila.pipeline.ChamberPipeline;
 import com.shangrila.world.ShangriLaRegion;
 
 import net.minecraft.commands.CommandSourceStack;
@@ -37,8 +38,29 @@ public final class ShangriLaCommand {
 
         root.then(Commands.literal("locate").executes(ShangriLaCommand::locate));
         root.then(Commands.literal("info").executes(ShangriLaCommand::info));
+        root.then(Commands.literal("pipeline")
+                .then(Commands.literal("off").executes(c -> setMode(c, ChamberPipeline.Mode.OFF)))
+                .then(Commands.literal("carve").executes(c -> setMode(c, ChamberPipeline.Mode.CARVE)))
+                .then(Commands.literal("carve_insulate").executes(c -> setMode(c, ChamberPipeline.Mode.CARVE_INSULATE)))
+                .then(Commands.literal("full").executes(c -> setMode(c, ChamberPipeline.Mode.FULL)))
+                .then(Commands.literal("status").executes(ShangriLaCommand::pipelineStatus)));
 
         dispatcher.register(root);
+    }
+
+    private static int setMode(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx,
+                                ChamberPipeline.Mode mode) {
+        ChamberPipeline.setMode(mode);
+        ctx.getSource().sendSuccess(() -> Component.literal(
+                "Pipeline mode → " + mode + ". Applies to chunks generated from now on."),
+                false);
+        return 1;
+    }
+
+    private static int pipelineStatus(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
+        ChamberPipeline.Mode m = ChamberPipeline.getMode();
+        ctx.getSource().sendSuccess(() -> Component.literal("Pipeline mode: " + m), false);
+        return 1;
     }
 
     private static int locate(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {

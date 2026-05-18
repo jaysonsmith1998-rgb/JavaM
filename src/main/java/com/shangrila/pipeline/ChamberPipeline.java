@@ -81,6 +81,27 @@ public final class ChamberPipeline {
 
     private ChamberPipeline() {}
 
+    /**
+     * Runtime mode for diagnostic isolation of which pipeline step causes the
+     * chunk-gen freeze. Set via {@code /shangrila pipeline <mode>}.
+     */
+    public enum Mode {
+        /** No pipeline work. Just region-detection log. Server-friendly. */
+        OFF,
+        /** Carve step only. */
+        CARVE,
+        /** Carve + insulate steps only. */
+        CARVE_INSULATE,
+        /** Full pipeline (every step enabled). */
+        FULL
+    }
+
+    private static final java.util.concurrent.atomic.AtomicReference<Mode> MODE =
+            new java.util.concurrent.atomic.AtomicReference<>(Mode.OFF);
+
+    public static Mode getMode() { return MODE.get(); }
+    public static void setMode(Mode m) { MODE.set(m); }
+
     /** Entry point: called once per chunk after vanilla worldgen completes. */
     public static void processChunk(ServerLevel level, LevelChunk chunk) {
         ChunkPos cp = chunk.getPos();
@@ -90,41 +111,63 @@ public final class ChamberPipeline {
         List<RegionContext> regions = regionOverlapCheck(cp, salt);
         if (regions.isEmpty()) return;
 
-        // DIAGNOSTIC MODE: the heavy pipeline work is currently disabled while
-        // we isolate why chunk gen freezes near regions. Log the detection and
-        // bail. If chunks now load smoothly near a region, the freeze is in
-        // the pipeline body (carve/insulate). If chunks still freeze, the
-        // freeze cause is somewhere outside this listener.
-        ShangriLaMod.LOG.info("Region chunk detected at {} {} ({} regions) — pipeline DISABLED for diagnostics",
-                cp.x(), cp.z(), regions.size());
-        if (true) return;
-
-        // Resolve the cave biome holder once. Biomes are loaded from the
-        // server's biome registry; the cherry_cavern definition is in our mod
-        // resources.
-        HolderLookup<Biome> biomeLookup = level.registryAccess().lookupOrThrow(Registries.BIOME);
-        Holder<Biome> caveBiome = biomeLookup.get(CHERRY_CAVERN_KEY).orElse(null);
-        if (caveBiome == null) {
-            ShangriLaMod.LOG.warn(
-                    "Cherry-cavern biome not registered; skipping pipeline for chunk {} {}",
-                    cp.x(), cp.z());
+        Mode mode = MODE.get();
+        if (mode == Mode.OFF) {
+            ShangriLaMod.LOG.info("Region chunk {} {} ({} regions) — mode OFF, skipping",
+                    cp.x(), cp.z(), regions.size());
             return;
         }
 
+        // Resolve the cave biome holder once for the FULL mode's setBiome step.
+        Holder<Biome> caveBiome = null;
+        if (mode == Mode.FULL) {
+            HolderLookup<Biome> biomeLookup = level.registryAccess().lookupOrThrow(Registries.BIOME);
+            caveBiome = biomeLookup.get(CHERRY_CAVERN_KEY).orElse(null);
+        }
+
         for (RegionContext region : regions) {
+            long tCarve = 0, tInsulate = 0, tSurface = 0, tWater = 0, tBiome = 0, tVillage = 0;
+
             long t0 = System.nanoTime();
             carve(level, chunk, region);
-            insulate(level, chunk, region);
-            surfaceTerrain(level, chunk, region);
-            terrainModifications(level, chunk, region);
-            waterFeatures(level, chunk, region);
-            decorations(level, chunk, region);
-            setBiome(level, chunk, region, caveBiome);
-            placeVillage(level, chunk, region);
-            long elapsed = (System.nanoTime() - t0) / 1_000_000;
-            if (elapsed > 50) {
-                ShangriLaMod.LOG.warn("Region chunk {} {} took {} ms",
-                        cp.x(), cp.z(), elapsed);
+            tCarve = (System.nanoTime() - t0) / 1_000_000;
+
+            if (mode == Mode.CARVE_INSULATE || mode == Mode.FULL) {
+                t0 = System.nanoTime();
+                insulate(level, chunk, region);
+                tInsulate = (System.nanoTime() - t0) / 1_000_000;
+            }
+
+            if (mode == Mode.FULL) {
+                t0 = System.nanoTime();
+                surfaceTerrain(level, chunk, region);
+                tSurface = (System.nanoTime() - t0) / 1_000_000;
+
+                terrainModifications(level, chunk, region);
+
+                t0 = System.nanoTime();
+                waterFeatures(level, chunk, region);
+                tWater = (System.nanoTime() - t0) / 1_000_000;
+
+                decorations(level, chunk, region);
+
+                t0 = System.nanoTime();
+                setBiome(level, chunk, region, caveBiome);
+                tBiome = (System.nanoTime() - t0) / 1_000_000;
+
+                t0 = System.nanoTime();
+                placeVillage(level, chunk, region);
+                tVillage = (System.nanoTime() - t0) / 1_000_000;
+            }
+
+            long total = tCarve + tInsulate + tSurface + tWater + tBiome + tVillage;
+            ShangriLaMod.LOG.info(
+                    "Region chunk {} {} [{}]: carve={}ms insulate={}ms surface={}ms water={}ms biome={}ms village={}ms total={}ms",
+                    cp.x(), cp.z(), mode,
+                    tCarve, tInsulate, tSurface, tWater, tBiome, tVillage, total);
+            if (total > 500) {
+                ShangriLaMod.LOG.warn("Chunk {} {} exceeded 500ms ({} ms) — likely freeze culprit",
+                        cp.x(), cp.z(), total);
             }
         }
     }
